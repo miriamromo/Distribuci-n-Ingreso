@@ -306,7 +306,7 @@ se utiliza la función constrOptim de la librería Alabama para que se
 finalice el proceso de estimación, el vector xGGsin es el que se obtiene
 como estimación final.
 
-```{r echo=FALSE, cache=TRUE}
+```{r echo=TRUE, cache=TRUE}
 gammues<-gamlss(muestra~1, family=GG,weights=fac)
 gmag<-refit(gammues) # repetir el proceso en caso de no convergencia
     mu<-fitted(gmag,"mu")[1]
