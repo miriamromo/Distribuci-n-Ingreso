@@ -1,0 +1,488 @@
+---
+title: "Implementación en código R para estimar la distribución de ingreso de datos provenientes de encuestas, ajuste de compatibilidad con otras fuentes"
+author: "Ana Miriam"
+date: "2025-07-14"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(cache.rebuild = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+El objetivo general consiste en estimar la distribución del ingreso en
+México utilizando la encuesta Nacional de Ingreso y Gasto de los Hogares
+(ENIGH), la cuál nos propociona el ingreso corriente de los hogares.
+Buscamos la compatibilidad de la ENIGH con dos fuentes de información
+adicionales: el Sistema de Cuentas Nacionales de México (SCNM) y el
+Servicio de Administración Tributaria (SAT).
+
+El procedimiento se basa en realizar una modelación paramétrica a la
+variable ingreso corriente de la ENIGH suponiendo que es una variable
+aleatoria con una forma funcional intrínseca, denotada f(y\|θ). Los
+parametros de esta función que denotamos por θ, resumirán la información
+clave de la muestra, permitiendonos reconstruir la distribución del
+ingreso.
+
+La propuesta no es solo ajustar los datos que nos da la encuesta, sino
+en integrar y conciliar la información complementaria de dichas fuentes
+por medio de un ajuste con restrucciones.
+
+Se explica, las fuentes de información utilizadas, en enfoque teorico
+que guia esta metodología y la implementación en R y los resultados de
+un ejercicio numérico.
+
+# DATOS
+
+Las fuentes de información utilizadas y los detalles importantes que hay
+que saber de ellas
+
+## ENIGH
+
+-   La encuesta es biaunal, por lo tanto, el proceso de ajuste de la
+    distribución se ha implementado cada dos años a partir de 2024,
+    abarcando tanto el ámbito nacional como el de entidad federativa.
+
+-   Para la estimación a nivel entidad se toma en cuenta la fuente:
+    Módulo de Condiciones Socioeconómicas (MSC), dada su capacitad de
+    desagregación.
+
+-   Estas encuestas presentan su información trimestralmente, por lo que
+    consideramos los resultados de cada ejercicio que hacemos ya sea a
+    nivel nacional o por entidad, también sean trimestralizados.
+
+-   Se consideró excluir del análisis los hogares que registran un
+    ingreso corriente trimestral igual o inferior a \$2000 pesos. Esta
+    decisión implica un ajuste en los factores de expansión para
+    asegurar que la población total representada se mantenga
+    constante.La reasignación del peso de los hogares eliminados se
+    llevó a cabo de manera uniforme entre los hogares restantes,
+    distribuyendo su representatividad proporcionalmente.
+
+El siguiente código en R demuestra cómo descargar un archivo CSV
+directamente desde el sitio web del INEGI. Utilizaremos los datos de
+2022 como ejemplo práctico.
+
+```{r descarga, eval=FALSE }
+url.zip<-"https://www.inegi.org.mx/contenidos/programas/enigh/tradicional/2012/microdatos/Tra_Concentrado_2012_concil_2010_csv.zip"
+## para el caso de archivos más recientes por ejemplo, 2022 usar la siguiente ruta ## url.zip<-"https://www.inegi.org.mx/contenidos/programas/enigh/nc/2022/microdatos/enigh2022_ns_concentradohogar_csv.zip"
+
+nombre_zip<-"Tra_Concentrado_2012_concil_2010_csv.zip" 
+
+# para el caso 2022 el nombre del archivo es concentradohogar.csv
+
+# crea un directorio "enigh_2012_datos" en la ruta actual de trabajo para que se #pueda guardar los datos. 
+dir_unzip <- "enigh_2012_datos"
+if (!dir.exists(dir_unzip)) {
+  dir.create(dir_unzip)
+}
+ #descarga y descomprime  el archivo zip 
+download.file(url.zip, destfile = nombre_zip, mode = "wb")
+unzip(nombre_zip, exdir = dir_unzip)
+#guarda la ruta donde se encuentra el archivo para despues leerlo
+ruta_csv <- file.path(dir_unzip, "tra_concentrado_2012_concil_2010.csv") 
+# caso 2022 concentradohogar.csv
+
+
+#los datos con los que se trabajaran
+data12<- read.csv(ruta_csv, encoding = "Latin-1", na.strings = c("", " "))
+names(data12) # todas las variables que contiene el archivo 
+file.remove(nombre_zip)
+```
+
+```{r }
+#los datos con los que se trabajaran
+dir_unzip <- "enigh_2012_datos"
+ruta_csv <- file.path(dir_unzip, "tra_concentrado_2012_concil_2010.csv")
+data12<- read.csv(ruta_csv, encoding = "Latin-1", na.strings = c("", " "))
+names(data12) # todas las variables que contiene el archivo 
+#file.remove(nombre_zip)
+```
+
+El siguiente código es para obtener el vector de valores de ingresos y
+factores de expansión
+
+```{r echo=TRUE}
+ muestra<-data12$ing_cor
+ fac<-data12$factor # aveces el factor de expansión tiene el nombre "factor_hog"
+ total_ingreso <-sum(muestra*fac) # 
+ tot_hog<-sum(fac) 
+ print(paste("total del ingreso de la muestra: ",total_ingreso,sep=""))
+ print(paste("total de hogares en la población: ",tot_hog,sep=""))
+```
+
+Se quitan los valores menores a 2000 y se redistribuye la población
+
+```{r, echo=TRUE}
+w<-c()
+w<-which(muestra<2000)
+if(length(w)==0)
+{muestra<-muestra} else 
+{muestra<-muestra[-w]
+ fac<-fac[-w]
+}
+fquitados<-tot_hog-sum(fac)  ## re-austar los valores de expansión 
+coci<-fquitados/length(fac)
+nfac<-(fac+coci)
+fac<-nfac  ## nuevos factores ajustados 
+
+```
+
+## SCNM
+
+El sistema de Cuentas Nacionales aporta distintos tipos de ingresos
+anuales en hogares. Constantemente actualizan sus valores debido algunos
+cambios necesarios ya sea de carácter metodológico o de cambios de años
+base, por ejemplo el cambio de base de 2003 a 2008 y el reciente cambio
+de 2008 a 2013. El ingreso que se usa en este proyecto es el numerado
+por B.7n Ingreso Disponible Ajustado Neto (IDAN), ya que este ingreso no
+incluye la depreciación de activos y sí contempla las transferencias en
+especie, ingreso reportado por ENIGH.
+
+-   Obtenemos el promedio trimestral nacional de hogares de ingreso
+    según Cuentas Nacionales usando como denominador el total nacional
+    de hogares (THogares) que reporta ENIGH:
+
+$$mean_{SCNM} = \frac{\frac{IDAN}{4}}{Thogares}$$
+
+-  Para el caso entidad, el promedio se calcula obteniendo una proporción:
+   el ingreso corriente total de la entidad y el ingreso corriente
+   nacional, ambos obtenidos de MCS. Este cociente lo denotamos por (PP).
+   El promedio de ingreso de cualquier entidad es:
+
+$$mean_{SCNM_{entidad}}= \frac{\frac{PP*IDAN}{4}}{Thogares_{entidad}}$$
+
+Para obtener el promedio de cuentas nacionales
+
+```{r echo=TRUE, cache=TRUE}
+idan<-  11635413   # valor de IDAN del 2012 
+tot_cn<-idan *1000000 # se multiplica por 1 millón  
+ci<-c(tot_cn/4/tot_hog)  # trimestralizado 
+print(paste("media de cuentas nacionales_2012= ",ci,sep=""))
+print(ci)
+```
+
+## SAT
+
+-   Los datos proporcionados por SAT son declaraciones por
+    contribuyentes anualizados. Cada registro de los archivos están
+    identificados de manera única por un número consecutivo RFC_ID. Se
+    indican en la mayoría de los casos, su entidad de procedencia.
+
+-   El archivo de datos usados para nuestros ajustes son las
+    declaraciones didácticas donde se proporciona el total de ingresos
+    acumulables denotado como i_dec_tiaonct1.
+
+-   Nos interesa el ingreso declarado de los más ricos.
+
+-   Como la información del contribuyente es anual, entonces el ingreso
+    de los más ricos tendrá que ser dividido por 4 para obtener datos
+    trimestralizados.
+
+-   Para el caso del ajuste a nivel nacional para algún año de interés
+    nos interesa: el promedio de ingresos declarado al SAT por el
+    millonesimo percentil(.999999) que corresponde los 32 más ricos, y
+    el ingreso del treintaidosavo más rico.
+
+-   Para el caso de entidades la referencia es a partir de los 20 más
+    ricos.
+
+```{r echo=TRUE,cache=TRUE}
+p<-0.999999
+mean_Sat_anual<- 1624174001.00 # promedio del ingreso de los 32 más ricos anual                                     2012
+mean_sat<-mean_Sat_anual/4 # trimestralizado 2012
+qi<-177965502 # ingreso del 32 del top-32 más ricos ya trimestralizado 2012
+print(mean_sat)
+```
+
+# PROCESO DE AJUSTE
+
+Se probaron varias funciones de densidad paramétricas para el ajuste de
+los datos de ingreso. Entre ellas Gamma Generalizada (GG) con 3
+parámetros dada por:
+
+$$f_{y}(y|\mu,\sigma, \nu)=\frac{|\nu|\theta^{\theta}z^{\theta}exp(-\theta z)}{\Gamma(\theta)y}$$
+Donde $$ z = (y / \mu)^{\nu}$$
+
+y $$ \theta = 1 / \sigma^{2} \nu^{2}$$.
+
+La esperanza de Y es:
+
+$$ E(Y,\mu,\sigma,\nu) = \mu\Gamma(\theta + \frac{1}{\nu})/[\theta^{1 / \nu} \Gamma(\theta)]$$
+El proceso se reduce a encontrar la estimación de los párametros de la
+función Gamma Generaliza por medio de log-verosimilitud sujeta a:
+
+-   La esperanza de la función de densidad sea exactamente el valor del
+    promedio de SCN.
+
+$$E(Y,\mu,\sigma,\nu)=mean_{SCNM}$$
+
+-   La esperanza truncada de la distribución a partir del quantil $qi$ a
+    $Inf$ sea exactamente el promedio de los 32(20) más ricos.
+
+$$ (\int_{q_{i}}^{Inf} yf(y)dy)/q = mean_{32másricos} $$
+
+Donde ${\bf q}$ es la proporción de hogares que tienen ingresos igual o
+menor que ${\bf q_{i}}$.
+
+## Implementación de la Distribución gamma tres parámetros
+
+LAs librerías en R necesarias para el ajuste
+
+```{r instalacion, message=FALSE,warning=FALSE,cache=TRUE}
+#install.packages("gamlss")
+#install.packages("alabama")
+library(gamlss)
+library(alabama)
+
+```
+
+La siguiente función que llamamos fgamG es la de densidad Gama
+Generalizada (GG) con pesos que se ajusta en este análisis
+
+```{r}
+fgamG<-function(x,m=muestra,w=fac) ## funcion de verosimilitud
+{ 
+  fi<-c()
+  fi<- -1*w*dGG(m, x[1], x[2],x[3],log=TRUE)
+  sumaf<-sum(fi)
+  return(sumaf)
+}
+
+```
+
+La función **hin** implementa las restricciones de desigualdad:
+$\mu$,$\sigma$ \> 0
+
+```{r}
+hin<-function(x)
+{
+  h <- rep(NA, 2)
+  h[1]<-x[1]
+  h[2]<-x[2]
+  h
+}
+
+
+```
+
+La función **heq** implementa las restricciones de igualdad:
+
+-   La esperanza de la función de densidad sea exactamente el valor del
+    promedio de SCN.
+-   La esperanza truncada de la distribución a partir del quantil $qi$ a
+    $Inf$ sea exactamente el promedio de los 32(20) más ricos.
+
+```{r}
+# esta función cambia de acuerdo a la función de densidad de ajuste
+heq<- function(x)  
+{
+  #print(x)
+  p=p
+  par<-x
+  t<-1/(x[2]^2*x[3]^2)
+  h <- rep(NA, 2)
+  inte<-c()
+  inte <-try(integrate(function(y) y*(dGG(y, mu=par[1],sigma=par[2],nu=par[3])), lower=qi, upper=1000000000000,stop.on.error = FALSE)$v,silent=TRUE)
+  if (is.character(inte))
+    inte<-1000
+  h[1]<-inte-prom
+  h[2]<-ci-(x[1]*gamma(t+(1/x[3]))/(t^(1/x[3])*gamma(t)))
+  h
+  # print(h)
+}
+
+```
+
+## Caso no restringido
+
+El siguiente paso, es el de obtener una estimación preliminar de los
+parámetros de la función GG a través de la función gmag, posteriormente
+se utiliza la función constrOptim de la librería Alabama para que se
+finalice el proceso de estimación, el vector xGGsin es el que se obtiene
+como estimación final.
+
+```{r echo=FALSE, cache=TRUE}
+gammues<-gamlss(muestra~1, family=GG,weights=fac)
+gmag<-refit(gammues) # repetir el proceso en caso de no convergencia
+    mu<-fitted(gmag,"mu")[1]
+    sigma<-fitted(gmag,"sigma")[1]
+    nu<-fitted(gmag,"nu")[1]
+    theta<-c(mu=mu,sigma=sigma,nu=nu) # estimación inicial 
+# ajuste con alabama sin restricciones, notar que theta se usa como valor inicial # en el ajuste 
+gammues<-c()
+x<-c()
+gammues<-constrOptim.nl(par=theta, fn=fgamG, hin=hin)
+xGGsin<-gammues$par
+cat("vector estimado del parámetro de la función GG sin restricciones =\n")
+print(xGGsin)
+
+```
+
+Es importante tomar en cuenta que la calidad de las estimaciones depende significativamente de los valores iniciales que se proporcionen. Para asegurar que obtenemos la mejor solución posible, es necesario ejecutar el proceso de estimación con múltiples conjuntos de valores iniciales y, posteriormente, seleccionar aquella que maximice la verosimilitud.
+
+
+Para obtener estadísticos de la función no restringida se tiene las
+siguientes instrucciones
+
+```{r message=TRUE, warning=TRUE,cache=TRUE}
+x<-xGGsin
+t<-1/(x[2]^2*x[3]^2)
+ExGGsin<-(x[1]*gamma(t+(1/x[3])))/(t^(1/x[3])*gamma(t)) # Esperanza de GG no                                                                restringida
+vGGsin<-gammues$value   # valor de la verosimilitud 
+# quantiles 
+
+# vector probabilidades para quantiles
+probs = c(0.1, 0.5, 1, 2, 5, 10,20,30,40, 50,60,70,80,90,95,98,99,99.5,99.9)/100  
+par<-xGGsin
+qGGsin<-qGG(probs, mu=par[1],sigma=par[2], nu=par[3],lower.tail = TRUE, 
+            log.p = FALSE)
+cat("Quantiles para distintas probabilidades de GG sin restricciones =\n")
+print(cbind(probs,quantiles=qGGsin))
+```
+
+## Caso restringido
+
+La función encargada de encontrar la solución al sistema no lineal con restricciones es **constOptim.nl** de la librería **Alabama**. 
+
+```{r ajuste restringido, cache=TRUE}
+par<-xGGsin
+q<-1-p  # porcentaje de hogares con ingreso menor a qi
+prom<-mean_sat*q # proporción de hogares que tienen ingresos igual o menor que qi
+ansgam<- constrOptim.nl(par=par, fn=fgamG,heq=heq,hin=hin)
+xGGcon<-ansgam$par
+
+```
+
+Para asegurar la convergencia del ajuste, es importante verificar los resultados de la función constrOptim.nl.
+Por un lado, el valor de **Max(abs(heq))** debe ser muy pequeño, cercano a cero. Esto garantiza que las restricciones impuestas por **heq** (h[1] y h[2]) se cumplan de manera efectiva, ie, que sus valores tiendan a cero. 
+Por otro lado, el valor de **fval** debe ser monotónomente creciente en cada iteración, esto demuestra que el algoritmo está encontrando una mejor solución en cada paso. 
+
+
+```{r echo=TRUE, cache=TRUE}
+cat("vector estimado del parámetro de la función GG con restricciones =\n")
+print(xGGcon)
+```
+
+Para obtener estadisticos necesarios de esta función restringida, simplemente guardamos la salida **xGGcon** que contiene la estimación de los parámetros de la función GG bajo restricciones aplicadas.   
+
+```{r,cache=TRUE}
+x<-xGGcon
+t<-1/(x[2]^2*x[3]^2)
+ExGGcon<-x[1]*gamma(t+(1/x[3]))/(t^(1/x[3])*gamma(t))
+cat("Esperanza de la función GG=\n")
+print(ExGGcon)
+vGGcon<-ansgam$value ## verosimilitud
+
+par<-xGGcon
+qGGcon<-qGG(probs, mu=par[1],sigma=par[2], nu=par[3],lower.tail = TRUE, log.p = FALSE)
+cat("Quantiles para distintas probabilidades de GG con restricciones =\n")
+print(cbind(probs,quantiles=qGGcon))
+
+```
+
+Cociente entre el decil más bajo con el decil más alto 
+
+```{r , cache=TRUE}
+     q10<-qGG(p=c(.10),mu=par[1],sigma=par[2],nu=par[3])
+     q90<-qGG(p=c(.90),mu=par[1],sigma=par[2],nu=par[3])
+     
+     i0_10<-integrate(function(x) x*dGG(x=x, mu=par[1], sigma=par[2],nu=par[3]), 
+                    lower= 0, upper=q10)
+     i0_90<-integrate(function(x) x*dGG(x=x, mu=par[1], sigma=par[2],nu=par[3]), 
+                     lower= 0, upper=q90 )
+     num<-ExGGcon-i0_90$v
+     numGG<-num     # valor promedio de ingreso para el ultimo decil (90-10)
+     denGG<-i0_10$v  # valor promedio de ingreso para el primer decil 
+     resGG<-num/denGG   # cociente entre primer decil y ultimo decil 
+     mGG<-max(muestra)  #  máximo de la muestra 
+     i<-integrate(function(x) x*dGG(x=x, mu=par[1], sigma=par[2],nu=par[3]), 
+                  lower= 0, upper=mGG )
+     cocGG<-ExGGcon-i$v   ## ingreso promedio mayor al máximo observado en muestra      
+     cocienteMax <- cocGG/ExGGcon #Relación ingreso del máximo observado a ingresos totales
+
+```
+
+
+
+Promedios de ingreso para distintos quantiles
+
+
+```{r, cache=TRUE}
+   par<-xGGcon
+   pes<-c( 0, 0.1,.2,.3,.4,.5,.6,.7,.8,.9,.99,.999999)
+   qq<-c()
+   ii<-c()
+   qq[1]<-0
+   for ( i in 2:12)
+     qq[i]<-qGG(p=pes[i],mu=par[1],sigma=par[2],nu=par[3])
+   
+   for ( i in 2:12)
+     ii[i]<-integrate(function(x) x*dGG(x=x, mu=par[1],sigma=par[2],nu=par[3]), 
+                      lower= qq[i-1], upper=qq[i])$v
+   
+   
+   ii[i+1]<-  ii[i+1]<-integrate(function(x) x*dGG(x=x, mu=par[1],sigma=par[2],nu=par[3]), lower= qq[12], upper=100000000000)$v
+   ii<-ii[-1]
+   ii[13]<-sum(ii)
+   if (ii[13]==ExGGcon) 
+     ii[13]<-ii[13] else 
+     {ii[12]<-ExGGcon-sum(ii[-c(12,13)])
+      ii[13]<-ExGGcon}
+   iiGG<-ii
+   
+   deciles<-c(
+     "0---10",
+     "10---20",
+     "20---30",
+     "30---40",
+     "40---50",
+     "50---60",
+     "60---70",
+     "70---80",
+     "80---90",
+     "90---99",
+     "99---999999",
+     "999999--Inf","suma")
+   perGG<-qq[12]  ## percentil .9999999 
+   
+   promedios<-cbind(deciles,iiGG)
+  print(promedios)
+```
+
+
+Si se desea obtener el gini se puede utilizar la siguiente función. Como entrada necesita un vector de ingresos y de salida se obtiene el gini de esos ingresos
+```{r}
+gini2<- function(x, unbiased = TRUE, na.rm = FALSE){
+    if (na.rm)
+      x <- x[!na.ind]
+    n <- length(x)
+    mu <- mean(x)
+    N <- if (unbiased) n * (n - 1) else n * n
+    ox <- x[order(x)] ## quitar la informacion irrelevante DROP 
+    ## la funci?n crossprod = productos cruzados 
+    dsum <- drop(crossprod(2 * 1:n - n - 1,  ox)) 
+    dsum / (mu * N)
+  }
+```
+
+```{r, cache=TRUE}
+ set.seed(10)
+   x<-xGGcon
+   ma<- rGG(1000, x[1], x[2],x[3])
+   giniGG<-gini2(ma)
+   print(giniGG)
+```
+
+Tambien puede usarse la función ya declarada "gini" de la librería **laeken**
+
+```{r,message=FALSE,warning=FALSE,cache=TRUE}
+#install.packages("laeken")
+library(laeken)
+gini(ma)
+```
+
