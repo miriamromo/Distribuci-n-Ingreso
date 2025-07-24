@@ -44,7 +44,7 @@ que saber de ellas
 ## ENIGH
 
 -   La encuesta es biaunal, por lo tanto, el proceso de ajuste de la
-    distribución se ha implementado cada dos años a partir de 2024,
+    distribución se ha implementado cada dos años a partir de 2004,
     abarcando tanto el ámbito nacional como el de entidad federativa.
 
 -   Para la estimación a nivel entidad se toma en cuenta la fuente:
@@ -73,7 +73,7 @@ url.zip<-"https://www.inegi.org.mx/contenidos/programas/enigh/tradicional/2012/m
 
 nombre_zip<-"Tra_Concentrado_2012_concil_2010_csv.zip" 
 
-# para el caso 2022 el nombre del archivo es concentradohogar.csv
+# para el caso 2012 el nombre del archivo es concentradohogar.csv
 
 # crea un directorio "enigh_2012_datos" en la ruta actual de trabajo para que se #pueda guardar los datos. 
 dir_unzip <- "enigh_2012_datos"
